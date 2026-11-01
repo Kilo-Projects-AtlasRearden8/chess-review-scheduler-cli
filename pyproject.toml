@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chess-review-scheduler"
+version = "1.0.0"
+description = "Local-first spaced-repetition CLI for chess study (openings, tactics, endgames)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "Asdale Dynamics, LLC"}]
+dependencies = []
+
+[project.scripts]
+chess-review = "chess_review.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["chess_review*"]
