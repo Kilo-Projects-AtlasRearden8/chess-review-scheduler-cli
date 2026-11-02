@@ -53,6 +53,15 @@ class Storage:
         self.save(items)
         return items
 
+    def delete(self, item_id: str) -> ReviewItem:
+        items = self.load()
+        for index, item in enumerate(items):
+            if item.id == item_id:
+                removed = items.pop(index)
+                self.save(items)
+                return removed
+        raise KeyError(f"no item with id {item_id!r}")
+
     def grade(self, item_id: str, quality: int, on: Optional[str] = None) -> ReviewItem:
         items = self.load()
         for index, item in enumerate(items):
@@ -93,9 +102,13 @@ class Storage:
         if not isinstance(raw, list):
             raise ValueError("JSON import must contain a list of items")
         items = self.load()
+        existing_ids = {item.id for item in items}
         for entry in raw:
             item = ReviewItem.from_dict(entry)
             item.validate()
+            if item.id in existing_ids:
+                continue
+            existing_ids.add(item.id)
             items.append(item)
         self.save(items)
         return items

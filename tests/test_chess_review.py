@@ -1,10 +1,21 @@
 """Tests for the chess review scheduler."""
 
+import os
+import tempfile
 from datetime import date
 from unittest import TestCase
 
-from chess_review.scheduler import ReviewItem, CATEGORIES, sm2_next, due_items, today
+from chess_review.scheduler import (
+    ReviewItem,
+    CATEGORIES,
+    sm2_next,
+    due_items,
+    upcoming_items,
+    filter_by_category,
+    today,
+)
 from chess_review.storage import Storage
+from chess_review.cli import main
 
 
 class SchedulerTests(TestCase):
@@ -67,10 +78,42 @@ class SchedulerTests(TestCase):
         due = due_items(items, date(2026, 1, 15))
         self.assertEqual([i.id for i in due], ["a"])
 
+    def test_upcoming_items(self):
+        items = [
+            ReviewItem(id="a", category="tactic", title="a", next_review="2026-01-05"),
+            ReviewItem(id="b", category="tactic", title="b", next_review="2026-01-08"),  # exactly 7 days
+            ReviewItem(id="c", category="tactic", title="c", next_review="2026-01-01"),  # overdue
+            ReviewItem(id="d", category="tactic", title="d", next_review="2026-01-09"),  # 8 days, too far
+        ]
+        upcoming = upcoming_items(items, 7, date(2026, 1, 1))
+        self.assertEqual(sorted(i.id for i in upcoming), ["a", "b"])
+
+    def test_upcoming_items_empty(self):
+        items = [
+            ReviewItem(id="a", category="tactic", title="a", next_review="2026-01-20"),
+        ]
+        upcoming = upcoming_items(items, 7, date(2026, 1, 1))
+        self.assertEqual(upcoming, [])
+
+    def test_filter_by_category(self):
+        items = [
+            ReviewItem(id="a", category="opening", title="a"),
+            ReviewItem(id="b", category="tactic", title="b"),
+            ReviewItem(id="c", category="opening", title="c"),
+        ]
+        openings = filter_by_category(items, "opening")
+        self.assertEqual(sorted(i.id for i in openings), ["a", "c"])
+
+    def test_filter_by_category_none(self):
+        items = [
+            ReviewItem(id="a", category="tactic", title="a"),
+        ]
+        result = filter_by_category(items, "endgame")
+        self.assertEqual(result, [])
+
 
 class StorageTests(TestCase):
     def setUp(self):
-        import tempfile, os
         self.dir = tempfile.mkdtemp()
         self.path = os.path.join(self.dir, "data.json")
         self.storage = Storage(self.path)
@@ -81,6 +124,19 @@ class StorageTests(TestCase):
         items = self.storage.list_all()
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "queen sac")
+
+    def test_delete(self):
+        self.storage.add(ReviewItem(id="i1", category="tactic", title="queen sac"))
+        self.storage.add(ReviewItem(id="i2", category="opening", title="sicilian"))
+        removed = self.storage.delete("i1")
+        self.assertEqual(removed.id, "i1")
+        items = self.storage.list_all()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].id, "i2")
+
+    def test_delete_missing(self):
+        with self.assertRaises(KeyError):
+            self.storage.delete("nope")
 
     def test_grade_advances(self):
         item = ReviewItem(id="i1", category="opening", title="sicilian")
@@ -105,6 +161,19 @@ class StorageTests(TestCase):
 
     def test_import_json(self):
         self.storage.import_json("/tmp/kilo/import_seed.json")
+
+    def test_import_skips_duplicates(self):
+        self.storage.add(ReviewItem(id="i1", category="tactic", title="original"))
+        seed_path = "/tmp/kilo/import_seed.json"
+        self.storage.import_json(seed_path)
+        items = self.storage.list_all()
+        ids = [item.id for item in items]
+        self.assertIn("i1", ids)
+        self.assertIn("seed-1", ids)
+        # importing again should not duplicate seed-1
+        self.storage.import_json(seed_path)
+        items = self.storage.list_all()
+        self.assertEqual(ids.count("seed-1"), 1)
 
     def test_missing_file_returns_empty(self):
         self.assertEqual(self.storage.list_all(), [])
@@ -131,3 +200,55 @@ class CliTests(TestCase):
         path = os.path.join(tempfile.mkdtemp(), "data.json")
         self.assertEqual(self.run_cli("--data", path, "grade", "nope", "5"), 1)
         self.assertEqual(self.run_cli("--data", path, "review", "nope"), 1)
+
+    def test_delete_then_list(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        self.run_cli("--data", path, "add", "--category", "opening", "--title", "italian")
+        self.assertEqual(self.run_cli("--data", path, "delete", "item-1"), 0)
+        self.assertEqual(self.run_cli("--data", path, "delete", "nope"), 1)
+
+    def test_upcoming(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        # item-1 due today, so not "upcoming" (strictly after today)
+        self.assertEqual(self.run_cli("--data", path, "upcoming", "7"), 0)
+
+    def test_list_category_filter(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        self.run_cli("--data", path, "add", "--category", "opening", "--title", "italian")
+        self.assertEqual(self.run_cli("--data", path, "list", "--category", "tactic"), 0)
+        self.assertEqual(self.run_cli("--data", path, "list", "--category", "endgame"), 0)
+
+    def test_due_category_filter(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        self.run_cli("--data", path, "add", "--category", "opening", "--title", "italian")
+        self.assertEqual(self.run_cli("--data", path, "due", "--category", "tactic"), 0)
+
+    def test_invalid_quality(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        with self.assertRaises(SystemExit):
+            self.run_cli("--data", path, "grade", "item-1", "9")
+        with self.assertRaises(SystemExit):
+            self.run_cli("--data", path, "grade", "item-1", "-1")
+
+    def test_invalid_date(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "add", "--category", "tactic", "--title", "puzzle")
+        with self.assertRaises(SystemExit):
+            self.run_cli("--data", path, "due", "--on", "not-a-date")
+
+    def test_import_csv(self):
+        import tempfile, os
+        path = os.path.join(tempfile.mkdtemp(), "data.json")
+        self.run_cli("--data", path, "import", "csv", "/tmp/kilo/cli_export.csv")
+        self.assertEqual(self.run_cli("--data", path, "list"), 0)

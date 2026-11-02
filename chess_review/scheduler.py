@@ -105,3 +105,24 @@ def due_items(items: List[ReviewItem], on: Optional[date] = None) -> List[Review
         if nr <= on:
             result.append(item)
     return result
+
+
+def upcoming_items(items: List[ReviewItem], within_days: int, on: Optional[date] = None) -> List[ReviewItem]:
+    """Return items whose next_review falls within the next `within_days` days (exclusive of overdue)."""
+    if on is None:
+        on = today()
+    cutoff = on + timedelta(days=within_days)
+    result = []
+    for item in items:
+        try:
+            nr = date.fromisoformat(item.next_review)
+        except ValueError:
+            continue
+        if on < nr <= cutoff:
+            result.append(item)
+    return result
+
+
+def filter_by_category(items: List[ReviewItem], category: str) -> List[ReviewItem]:
+    """Return only items matching `category`."""
+    return [item for item in items if item.category == category]
